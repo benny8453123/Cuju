@@ -1,0 +1,1 @@
+/home/ben/Cuju/kvm/x86/vmx.o-.text-4e47 /home/ben/Cuju/kvm/x86/vmx.c .text vmx_handle_external_intr callq *%rdx

@@ -1,0 +1,5 @@
+/home/ben/Cuju/kvm/x86/emulate.o-.text-2005 /home/ben/Cuju/kvm/x86/emulate.c .text fastop callq *%rsi
+/home/ben/Cuju/kvm/x86/emulate.o-.text-898a /home/ben/Cuju/kvm/x86/emulate.c .text em_loop callq *%rdx
+/home/ben/Cuju/kvm/x86/emulate.o-.text-a89a /home/ben/Cuju/kvm/x86/emulate.c .text x86_emulate_insn callq *%rax
+/home/ben/Cuju/kvm/x86/emulate.o-.text-acef /home/ben/Cuju/kvm/x86/emulate.c .text x86_emulate_insn callq *%rax
+/home/ben/Cuju/kvm/x86/emulate.o-.text-ad64 /home/ben/Cuju/kvm/x86/emulate.c .text x86_emulate_insn callq *%rax
