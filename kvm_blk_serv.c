@@ -2,6 +2,152 @@
 #include "qemu/thread.h"
 #include "qemu/typedefs.h"
 extern uint32_t debug_flag;
+extern int wreq_quota;
+extern struct kvm_blk_request *wreq_head,*wreq_last,*wreq_curr;
+extern struct kvm_blk_request *wreq_lastep,*wreq_curep,*wreq_comep;
+
+void kvm_blk_server_retransmit_cb(KvmBlkSession *s) {
+		//struct kvm_blk_request *br;
+		struct kvm_blk_request *last;
+		
+		if(wreq_comep == NULL)
+				return;
+		//clear all after commited epoch
+		last = wreq_last;
+		while(last != wreq_comep) {
+				if(wreq_curr !=NULL)
+						++wreq_quota;
+				if(last == wreq_curr)
+						wreq_curr = NULL;
+				wreq_last = wreq_last->prev;
+				free(last);
+				last = wreq_last;
+		}
+		wreq_lastep = wreq_comep;
+		/*	
+		//call back from head to last
+		last = (wreq_curr == NULL)?wreq_comep:wreq_curr;
+		br = wreq_head->next;
+		while(br != last && br != NULL) {
+				if(br->cmd == KVM_BLK_CMD_WRITE) {
+ 						s->send_hdr.cmd = KVM_BLK_CMD_WRITE;
+						s->send_hdr.id = br->id;
+						s->send_hdr.payload_len = 0;
+						s->send_hdr.num_reqs = 0;
+
+						s->send_hdr.flags = br->flags;
+						s->send_hdr.cb = br->cb;
+						s->send_hdr.opaque = br->opaque;
+						s->send_hdr.piov = br->piov;
+
+						kvm_blk_output_append(s, &s->send_hdr, sizeof(s->send_hdr));
+						kvm_blk_output_flush(s);
+				}
+				br = br->next;
+		}
+		*/
+}
+
+//find last wreq client get and free previous br
+void kvm_blk_server_release_prev(KvmBlkSession *s) {
+		struct kvm_blk_request *br;
+		struct kvm_blk_request *head=NULL;
+		//TODO:if server have not get wreq for a long time will out of memory because of preserving to much epoch tag after wreq_curr
+		
+		//first epoch
+		if(wreq_comep == NULL)
+				return;
+		br = wreq_head;
+		//find the last wreq client get from head
+		while(br->id != wreq_lastep->id || 
+						br->cmd != KVM_BLK_CMD_WRITE) {
+				if(br == wreq_lastep)
+						return;
+				wreq_head = wreq_head->next;
+				br = wreq_head;
+		}
+		//free before br
+		head = wreq_head;
+		while(head != br) {
+				wreq_head = wreq_head->next;
+				free(head);
+				head = wreq_head;
+		}
+		head->prev = NULL;
+}
+
+void kvm_blk_server_wcallback(KvmBlkSession *s) {
+		struct kvm_blk_request *br;
+
+		//error handle
+		if(wreq_head == NULL) {
+				printf("Error:wreq_head null\n");
+				return ;
+		}
+		if(wreq_curr == NULL) {
+				printf("Error:wreq_curr null\n");
+				return ;
+		}
+		
+		if(!s->ft_mode) {
+				//handle faillover
+				while(wreq_head != wreq_curr)
+				{
+						br = wreq_head;
+						wreq_head = wreq_head->next;
+						free(br);
+				}
+				//remove from wreq list
+				br = wreq_head;
+				if(wreq_head->next == NULL) {
+						wreq_head = NULL;
+						wreq_last = NULL;
+						wreq_curr = NULL;
+				}
+				else { 
+						wreq_head = wreq_head->next;
+						wreq_curr = wreq_head;
+						wreq_head->prev = NULL;
+				}
+		}
+		else {
+				//current point to next entry
+				while(wreq_curr->cmd == KVM_BLK_CMD_EPOCH_TIMER) {
+						wreq_curep = wreq_curr;
+						wreq_curr = wreq_curr->next;
+				}
+				br = wreq_curr;
+				wreq_curr = wreq_curr->next;
+				while(wreq_curr != NULL) {
+						if(wreq_curr->cmd == KVM_BLK_CMD_WRITE)
+								break;
+						wreq_curep = wreq_curr;
+						wreq_curr = wreq_curr->next;
+				}
+		}
+
+		//callback current to client
+		s->send_hdr.cmd = KVM_BLK_CMD_WRITE;
+		s->send_hdr.id = br->id;
+		s->send_hdr.payload_len = 0;
+		s->send_hdr.num_reqs = 0;
+
+		s->send_hdr.flags = br->flags;
+		s->send_hdr.cb = br->cb;
+		s->send_hdr.opaque = br->opaque;
+		s->send_hdr.piov = br->piov;
+
+		kvm_blk_output_append(s, &s->send_hdr, sizeof(s->send_hdr));
+		if (debug_flag == 1) {
+				debug_printf("send write ack.\n");                      
+		}
+		kvm_blk_output_flush(s);
+		
+		//free br
+		if(!s->ft_mode)
+				free(br);
+}
+
 void kvm_blk_server_internal_init(KvmBlkSession *s)
 {
     QTAILQ_INIT(&s->request_list);
@@ -73,8 +219,8 @@ static void kvm_blk_rw_cb(void *opaque, int ret)
     				__func__, br, br->cmd, ret);
     }
 
-    s->send_hdr.cmd = br->cmd;
-    s->send_hdr.id = br->id;
+    //s->send_hdr.cmd = br->cmd;
+    //s->send_hdr.id = br->id;
 
     if (debug_flag == 1) {
     	QTAILQ_FOREACH(p, &s->request_list, node) {
@@ -83,33 +229,49 @@ static void kvm_blk_rw_cb(void *opaque, int ret)
     }
 
     if (ret < 0) {
+				s->send_hdr.cmd = br->cmd;
+				s->send_hdr.id = br->id;
         s->send_hdr.payload_len = ret;
         kvm_blk_output_append(s, &s->send_hdr, sizeof(s->send_hdr));
-        goto out;
+        kvm_blk_output_flush(s);
+				goto out;
     }
 
     switch (br->cmd) {
         case KVM_BLK_CMD_READ: {
 			if (br->ret_fast_read == KVM_BLK_RW_PARTIAL)
 				kvm_blk_fast_readv(s, br);
+						s->send_hdr.cmd = br->cmd;
+						s->send_hdr.id = br->id;
             s->send_hdr.payload_len = br->nb_sectors;
-            kvm_blk_output_append(s, &s->send_hdr, sizeof(s->send_hdr));
+            
+						s->send_hdr.flags = br->flags;
+						s->send_hdr.cb = br->cb;
+            s->send_hdr.opaque = br->opaque;
+            s->send_hdr.piov = br->piov;
+            
+						kvm_blk_output_append(s, &s->send_hdr, sizeof(s->send_hdr));
             kvm_blk_output_append_iov(s, &br->iov);            
             if (debug_flag == 1) {
                 debug_printf("send back read %d\n", (int)br->iov.size);
             }
+						kvm_blk_output_flush(s);
             break;
         }
         case KVM_BLK_CMD_WRITE: {
             if (--br->num_reqs)
                 return;
-            s->send_hdr.payload_len = 0;
-            s->send_hdr.num_reqs = 0;
-            kvm_blk_output_append(s, &s->send_hdr, sizeof(s->send_hdr));
+						//TODO:s is br->session if fall over;
+						if(wreq_quota < 0)
+								kvm_blk_server_wcallback(s);
+						++wreq_quota;
+            //s->send_hdr.payload_len = 0;
+            //s->send_hdr.num_reqs = 0;
+            //kvm_blk_output_append(s, &s->send_hdr, sizeof(s->send_hdr));
             // TODO free reqs, iov bufs            
-            if (debug_flag == 1) {
-                debug_printf("send write ack.\n");
-            }
+            //if (debug_flag == 1) {
+            //    debug_printf("send write ack.\n");
+            //}
             break;
         }
         default: {
@@ -119,7 +281,7 @@ static void kvm_blk_rw_cb(void *opaque, int ret)
     }
 
 out:
-    kvm_blk_output_flush(s);
+    //kvm_blk_output_flush(s);
 
     QTAILQ_REMOVE(&s->request_list, br, node);
 
@@ -295,7 +457,14 @@ int kvm_blk_serv_handle_cmd(void *opaque)
         br->nb_sectors = c.nb_sectors;
         br->cmd = s->recv_hdr.cmd;
         br->id = s->recv_hdr.id;
-        br->session = s;
+        
+				br->flags = s->recv_hdr.flags;
+        br->cb = s->recv_hdr.cb;
+				br->piov = s->recv_hdr.piov;
+        br->opaque = s->recv_hdr.opaque;
+        
+				br->session = s;
+				
         qemu_iovec_init(&br->iov, 1);
 		len = c.nb_sectors ;
 		new_buf = g_malloc(len);
@@ -326,6 +495,8 @@ int kvm_blk_serv_handle_cmd(void *opaque)
         struct kvm_blk_read_control c;
         void *new_buf;
         int len;
+				struct kvm_blk_request *wbr;
+
         ret = kvm_blk_recv(s, &c, sizeof(c));
         if (ret != sizeof(c))
             return -EINVAL;
@@ -334,11 +505,18 @@ int kvm_blk_serv_handle_cmd(void *opaque)
         }
 
         br = g_malloc0(sizeof(struct kvm_blk_request));
+        br->session = s;
         br->cmd = s->recv_hdr.cmd;
         br->id = s->recv_hdr.id;
-        br->session = s;
         br->num_reqs = s->recv_hdr.num_reqs;
-        br->opaque = opaque;
+        
+				br->flags = s->recv_hdr.flags;
+        br->cb = s->recv_hdr.cb;
+        br->opaque = s->recv_hdr.opaque;
+				br->piov = s->recv_hdr.piov;
+
+        //why?
+				//br->opaque = opaque;
 
         br->sector = c.sector_num;
         br->nb_sectors = c.nb_sectors;
@@ -353,6 +531,30 @@ int kvm_blk_serv_handle_cmd(void *opaque)
         
         qemu_iovec_add(br->piov, new_buf, len);
         QTAILQ_INSERT_TAIL(&s->request_list, br, node);
+				
+				//handle write call back : init wbr
+				wbr = g_malloc0(sizeof(*br));
+				memcpy(wbr,br,sizeof(*br));
+				wbr->next = NULL;
+				wbr->prev = wreq_last;
+				//insert wbr to wreq list for server call back
+				if(wreq_head == NULL) {
+						wreq_head = wbr;
+						wreq_last = wbr;
+						wreq_curr = wbr;
+				}
+				else {
+						if(wreq_curr==NULL)
+								wreq_curr = wbr;
+						wreq_last->next = wbr;
+						wreq_last = wbr;
+				}
+				//weather to call back or not
+				if(wreq_quota > 0) 
+						kvm_blk_server_wcallback(s);
+				//handle wreq_quota
+				--wreq_quota;
+						
 
         if (!s->ft_mode) {
             blk = blk_new();
@@ -366,11 +568,32 @@ int kvm_blk_serv_handle_cmd(void *opaque)
     }
 
     case KVM_BLK_CMD_EPOCH_TIMER: {
+				struct kvm_blk_request *wbr;
+
         br = g_malloc0(sizeof(struct kvm_blk_request));
         br->cmd = s->recv_hdr.cmd;
+				br->id = s->recv_hdr.id;
         br->session = s;
 
         QTAILQ_INSERT_TAIL(&s->request_list, br, node);
+				
+				//handle wreq list epoch ; init wbr
+				wbr = g_malloc0(sizeof(*br));
+				memcpy(wbr,br,sizeof(*br));
+				wbr->next = NULL;
+				wbr->prev = wreq_last;
+				//insert epoch tag in wreq list
+				if(wreq_head == NULL) {
+						wreq_head = wbr;
+						wreq_last = wbr;
+				}
+				else {
+						wreq_last->next = wbr;
+						wreq_last = wbr;
+				}
+				//set wreq_lastep
+				wreq_lastep = wbr;
+				
 
         break;
     }
@@ -382,8 +605,15 @@ int kvm_blk_serv_handle_cmd(void *opaque)
         //          server receives commit, write list flushed before read returns
         //          then read will read old data.
         //__kvm_blk_wait_read_done(s);
-        __kvm_blk_flush_all(s);
+				
+        
+				__kvm_blk_flush_all(s);
         __kvm_blk_server_ack_commit(s);
+				
+				//release wreq list
+				kvm_blk_server_release_prev(s);
+				//set commit epoch
+				wreq_comep = wreq_lastep;
         break;
     }
 

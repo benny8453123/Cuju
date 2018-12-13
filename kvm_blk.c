@@ -14,6 +14,7 @@
 extern QTAILQ_HEAD(, BlockDriverState) all_bdrv_states;
 
 
+#define BLK_SERVER_WRITE_CALLBACK_LIMIT 10
 #define BLK_SERVER_SESSION_INIT_BUF  4096000
 
 KvmBlkSession *kvm_blk_session = NULL;
@@ -22,6 +23,11 @@ bool kvm_blk_is_server = false;
 uint32_t write_request_id = 0;
 
 uint32_t debug_flag = 0;
+
+int wreq_quota;
+struct kvm_blk_request *wreq_head,*wreq_last,*wreq_curr;
+struct kvm_blk_request *wreq_lastep,*wreq_curep,*wreq_comep;
+
 static inline int kvm_blk_recv_header(KvmBlkSession *s)
 {
     int retval;
@@ -260,6 +266,11 @@ static void kvm_blk_accept(void *opaque)
     kvm_blk_server_internal_init(session);
     socket_set_nodelay(c);
     qemu_set_nonblock(c);
+		
+		//after session build and brfore read ready retransmit wreq cb
+		if(wreq_comep != NULL)
+				kvm_blk_server_retransmit_cb(session);
+
     qemu_set_fd_handler(c, kvm_blk_read_ready,
                        NULL, session);
     kvm_blk_session = session;
@@ -286,6 +297,14 @@ int kvm_blk_server_init(const char *p)
     }
     if (s <= 0)
         return -1;
+
+		wreq_quota = BLK_SERVER_WRITE_CALLBACK_LIMIT; 
+		wreq_head = NULL;
+		wreq_last = NULL;
+		wreq_curr = NULL;
+		wreq_lastep = NULL;
+		wreq_curep = NULL;
+		wreq_comep = NULL;
     assert(!qemu_iohandler_is_ft_paused());
     qemu_set_fd_handler(s,kvm_blk_accept,NULL,(void *)(intptr_t)s);
     return 0;
@@ -328,7 +347,7 @@ int kvm_blk_client_init(const char *ipnport)
     s->input_buf = g_malloc(s->input_buf_size);
 
     QTAILQ_INIT(&s->request_list);
-
+		wreq_curr = NULL;
     s->cmd_handler = kvm_blk_client_handle_cmd;
     socket_set_nodelay(sockfd);
     qemu_set_nonblock(sockfd);
@@ -337,5 +356,6 @@ int kvm_blk_client_init(const char *ipnport)
 
     kvm_blk_session = s;
     qemu_mutex_init(&s->mutex);
+
     return 0;
 }

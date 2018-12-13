@@ -200,7 +200,6 @@ static struct group_ft_wait_all {
 extern int my_gft_id;
 
 int qio_ft_sock_fd = 0;
-
 // At the time setting up FT, current will pointer to 2nd MigrationState.
 static int migration_states_current;
 
@@ -2239,7 +2238,7 @@ static void send_commit1(MigrationState *s)
     s->time_buf_off += sprintf(s->time_buf+s->time_buf_off, "\t%.4lf", (s->transfer_real_finish_time-s->transfer_real_start_time) * 1000);
     s->time_buf_off += sprintf(s->time_buf+s->time_buf_off, "\ttrntm\t%.4lf", (s->transfer_finish_time-s->transfer_start_time)*1000);
     s->time_buf_off += sprintf(s->time_buf+s->time_buf_off, "\t%4d\n", s->dirty_pfns_len);
-    //printf(s->time_buf);
+    //printf("%s",s->time_buf);
     s->time_buf_off = 0;
 
     FTPRINTF("\n%s %d (%lf) send commmit1\n", __func__, migrate_get_index(s), time_in_double());
@@ -3361,15 +3360,14 @@ static void migrate_timer(void *opaque)
 
     s->trans_serial = ++trans_serial;
 
+		//wait all sended write request callback
+		kvm_blk_wait_pending_wreq(kvm_blk_session);
+
     qemu_mutex_lock_iothread();
     vm_stop_mig();
     qemu_iohandler_ft_pause(true);
     if (kvm_blk_session)
         kvm_blk_epoch_timer(kvm_blk_session);
-
-#ifdef ENABLE_DIRTY_PAGE_TRACKING
-    dirty_page_tracking_backup(s->cur_off);
-#endif
 
     s->flush_vs_commit1 = false;
     s->transfer_start_time = time_in_double();
@@ -3387,7 +3385,7 @@ static void migrate_timer(void *opaque)
 
     assert(kvm_shmem_collect_trackable_dirty() >= 0);
     assert(!migrate_save_device_states_to_memory_advanced(s, 0));
-    s->virtio_blk_temp_list = virtio_blk_get_temp_list();
+    s->virtio_blk_temp_list = virtio_blk_get_temp_list();       //temp_list
     kvm_shmem_trackable_dirty_reset();
     migrate_ft_trans_send_device_state_header(s->ft_dev, s->file);
     qemu_put_buffer(s->file, s->ft_dev->ft_dev_buf, s->ft_dev->ft_dev_put_off);

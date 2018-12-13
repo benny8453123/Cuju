@@ -35,7 +35,9 @@
 // TODO there may be multiple virtual blocks, but for now we only need
 // to prove that retry-method works for one virtual block.
 VirtIOBlock *global_virtio_block;
-
+extern char *blk_server;
+bool check_is_blk = false;
+extern uint32_t debug_flag;
 static void confirm_req_read_memory_mapped(VirtIOBlockReq *req)
 {
     if (req->in == NULL) {
@@ -123,7 +125,7 @@ void virtio_blk_commit_temp_list(void* opaque)
     if (temp_list != NULL) {
         VirtIOBlock *s = global_virtio_block;
         ReqRecordCommit *c;
-        QTAILQ_INSERT_TAIL(&s->record_list, temp_list, node);
+        QTAILQ_INSERT_TAIL(&s->record_list, temp_list, node); //temp_list
         c = g_malloc(sizeof(ReqRecordCommit));
         c->req = temp_list;
         c->bh = qemu_bh_new(virtio_blk_flush_bh, c);
@@ -176,7 +178,8 @@ static void virtio_blk_pending_req_complete(VirtIOBlockReq *req)
 {
     VirtIOBlock *s = req->dev;
     VirtIOBlockReq *prq = s->pending_rq, *rq;
-
+		
+		//no pending request
     if (!prq) {
         return;
     }
@@ -263,8 +266,13 @@ static int virtio_blk_handle_rw_error(VirtIOBlockReq *req, int error,
 static void virtio_blk_rw_complete(void *opaque, int ret)
 {
     VirtIOBlockReq *next = opaque;
-
-    while (next) {
+		//debug print
+		if (debug_flag == 1) {
+				int64_t sector_num ;
+				sector_num = next->sector_num << BDRV_SECTOR_BITS;
+				printf("%s: sector: %ld opaque:%p\n",__func__,sector_num,next);
+		}
+		while (next) {
         VirtIOBlockReq *req = next;
         next = req->mr_next;
         trace_virtio_blk_rw_complete(req, ret);
@@ -592,15 +600,27 @@ static inline void submit_requests(BlockBackend *blk, MultiReqBuffer *mrb,
                               is_write ? BLOCK_ACCT_WRITE : BLOCK_ACCT_READ,
                               num_reqs - 1);
     }
+    if(check_is_blk){
+        if (is_write) {
+            blk_aio_pwritev_proxy(blk, sector_num<< BDRV_SECTOR_BITS , qiov, 0,
+                           virtio_blk_rw_complete, mrb->reqs[start]);
+        } else {
 
-    if (is_write) {
-        blk_aio_pwritev_proxy(blk, sector_num<< BDRV_SECTOR_BITS , qiov, 0,
-                       virtio_blk_rw_complete, mrb->reqs[start]);
-    } else {
+            blk_aio_preadv_proxy(blk, sector_num<< BDRV_SECTOR_BITS, qiov, 0,
+                           virtio_blk_rw_complete, mrb->reqs[start]);
+        }
+    }else{
+        if (is_write) {
+            blk_aio_pwritev(blk, sector_num<< BDRV_SECTOR_BITS , qiov, 0,
+                           virtio_blk_rw_complete, mrb->reqs[start]);
+        } else {
 
-        blk_aio_preadv_proxy(blk, sector_num<< BDRV_SECTOR_BITS, qiov, 0,
-                       virtio_blk_rw_complete, mrb->reqs[start]);
+            blk_aio_preadv(blk, sector_num<< BDRV_SECTOR_BITS, qiov, 0,
+                           virtio_blk_rw_complete, mrb->reqs[start]);
+        }
+
     }
+    
 }
 
 static int multireq_compare(const void *a, const void *b)
@@ -646,7 +666,7 @@ static void virtio_blk_submit_multireq(BlockBackend *blk, MultiReqBuffer *mrb)
              * 2. merge would exceed maximum number of IOVs
              * 3. merge would exceed maximum transfer length of backend device
              */
-						if (sector_num + nb_sectors != req->sector_num ||
+					if (kvmft_started() || sector_num + nb_sectors != req->sector_num ||
                 niov > blk_get_max_iov(blk) - req->qiov.niov ||
                 req->qiov.size > max_transfer ||
                 nb_sectors > (max_transfer -
@@ -787,16 +807,25 @@ static int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb, u
                                        &req->out.sector);
 
         if (is_write) {
-            qemu_iovec_init_external(&req->qiov, iov, out_num);
-            trace_virtio_blk_handle_write(req, req->sector_num,
+            qemu_iovec_init_external(&req->qiov, iov, out_num); 
+						
+						s = req->dev;
+            req->next = s->pending_rq;
+            s->pending_rq = req;
+            
+						trace_virtio_blk_handle_write(req, req->sector_num,
                                           req->qiov.size / BDRV_SECTOR_SIZE);
+
 /*			if (kvmft_started()) {
-				virtio_blk_save_write_head(s, req, head);
+
+                if(!check_is_blk){
+                    virtio_blk_save_write_head(s, req, head);         //temp_list
 #ifdef CONFIG_EPOCH_OUTPUT_TRIGGER
-				extern kvmft_notify_new_output();
-				kvmft_notify_new_output();
+                extern kvmft_notify_new_output();
+                kvmft_notify_new_output();
 #endif
-                break;
+                    break;
+                }
 			}*/
         } else {
             if (kvmft_started()) {
@@ -1114,12 +1143,13 @@ static void virtio_blk_save_device(VirtIODevice *vdev, QEMUFile *f)
     VirtIOBlock *s = VIRTIO_BLK(vdev);
 
     VirtIOBlockReq *req = s->rq;
-    ReqRecord *rec;
+    ReqRecord *rec;   //temp_list
+		uint32_t type;	// debugging
     int i;
 
-    // send temp_list and record_list to slave.
+    // send temp_list and record_list to slave. //temp_list
     QTAILQ_FOREACH(rec, &s->record_list, node) {
-        int nsend = 0; // debugging
+        int nsend = 0; 	// debugging
         qemu_put_sbyte(f, 3);
         qemu_put_be32(f, rec->left);
         for (i = 0; i < rec->len; i++) {
@@ -1141,8 +1171,18 @@ static void virtio_blk_save_device(VirtIODevice *vdev, QEMUFile *f)
     }
 
     req = s->pending_rq;
+
     while (req) {
-        qemu_put_sbyte(f, 2);
+				//for debug
+				if (debug_flag == 2) {
+						type = virtio_ldl_p(VIRTIO_DEVICE(req->dev), &req->out.type);
+						if(type & VIRTIO_BLK_T_OUT)
+								printf("%s save pending write request %p\n",__func__,req);
+						else
+								printf("%s save pending read request %p\n",__func__,req);
+				}
+				//save pending
+				qemu_put_sbyte(f, 2);
         if (s->conf.num_queues > 1) {
             qemu_put_be32(f, virtio_get_queue_index(req->vq));
         }
@@ -1224,6 +1264,7 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
         } else if (t == 2) {
             unsigned nvqs = s->conf.num_queues;
             unsigned vq_idx = 0;
+						uint32_t type;
             VirtIOBlockReq *req;
 
             if (nvqs > 1) {
@@ -1243,9 +1284,15 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
             req->next = s->rq;
             s->rq = req;
             */
+						//print write or read request 
+						type = virtio_ldl_p(VIRTIO_DEVICE(req->dev), &req->out.type);
+						if(type & VIRTIO_BLK_T_OUT)
+							printf("%s do pending write request %p\n",__func__,req);
+						else
+							printf("%s do pending read request %p\n",__func__,req);
 
             virtio_blk_handle_request(req, &mrb, 0);
-            printf("%s pending read request %p added\n", __func__, req);
+            //printf("%s pending read request %p added\n", __func__, req);
         } else if (t == 3) {
             int len = qemu_get_be32(f);
             if (len > 0) {

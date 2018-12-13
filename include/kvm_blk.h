@@ -48,6 +48,10 @@ typedef struct kvm_blk_header {
     int32_t payload_len;
     int32_t id;
     int32_t num_reqs;
+		QEMUIOVector *piov;
+		BdrvRequestFlags flags;
+		BlockCompletionFunc *cb;
+		void *opaque;
 } KvmBlkHeader;
 
 typedef int (*BLK_CMD_HANDLER)(void *opaque);
@@ -86,6 +90,9 @@ struct kvm_blk_request {
     int num_reqs;
 
     int ret_fast_read;
+		
+		struct kvm_blk_request *next;
+		struct kvm_blk_request *prev;
 
     QTAILQ_ENTRY(kvm_blk_request) node;
 };
@@ -178,6 +185,7 @@ void kvm_blk_epoch_start(KvmBlkSession *s);
 void kvm_blk_epoch_commit(KvmBlkSession *s);
 void kvm_blk_epoch_timer(KvmBlkSession *s);
 void kvm_blk_notify_ft(KvmBlkSession *s);
+void kvm_blk_wait_pending_wreq(KvmBlkSession *s);
 
 static inline void kvm_blk_set_ack_cb(KvmBlkSession *s,
                                     BLK_ACK_CB cb, void *opaque) {
@@ -188,5 +196,10 @@ static inline void kvm_blk_set_ack_cb(KvmBlkSession *s,
 static inline bool kvm_blk_check_ack_cb(KvmBlkSession *s) {
     return s->ack_cb != NULL;
 }
+
+//send write callback to client
+void kvm_blk_server_wcallback(KvmBlkSession *s);
+void kvm_blk_server_release_prev(KvmBlkSession *s);
+void kvm_blk_server_retransmit_cb(KvmBlkSession *s);
 
 #endif
