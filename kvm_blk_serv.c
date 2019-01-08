@@ -24,35 +24,13 @@ void kvm_blk_server_retransmit_cb(KvmBlkSession *s) {
 				last = wreq_last;
 		}
 		wreq_lastep = wreq_comep;
-		/*	
-		//call back from head to last
-		last = (wreq_curr == NULL)?wreq_comep:wreq_curr;
-		br = wreq_head->next;
-		while(br != last && br != NULL) {
-				if(br->cmd == KVM_BLK_CMD_WRITE) {
- 						s->send_hdr.cmd = KVM_BLK_CMD_WRITE;
-						s->send_hdr.id = br->id;
-						s->send_hdr.payload_len = 0;
-						s->send_hdr.num_reqs = 0;
-
-						s->send_hdr.flags = br->flags;
-						s->send_hdr.cb = br->cb;
-						s->send_hdr.opaque = br->opaque;
-						s->send_hdr.piov = br->piov;
-
-						kvm_blk_output_append(s, &s->send_hdr, sizeof(s->send_hdr));
-						kvm_blk_output_flush(s);
-				}
-				br = br->next;
-		}
-		*/
+		wreq_comep = NULL;
 }
 
 //find last wreq client get and free previous br
 void kvm_blk_server_release_prev(KvmBlkSession *s) {
 		struct kvm_blk_request *br;
 		struct kvm_blk_request *head=NULL;
-		//TODO:if server have not get wreq for a long time will out of memory because of preserving to much epoch tag after wreq_curr
 		
 		//first epoch
 		if(wreq_comep == NULL)
@@ -79,7 +57,6 @@ void kvm_blk_server_release_prev(KvmBlkSession *s) {
 void kvm_blk_server_wcallback(KvmBlkSession *s) {
 		struct kvm_blk_request *br;
 
-		//error handle
 		if(wreq_head == NULL) {
 				printf("Error:wreq_head null\n");
 				return ;
@@ -343,6 +320,8 @@ static void __kvm_blk_flush_all(KvmBlkSession *s)
             blk_aio_pwritev(blk, br->sector, br->piov,
             0, kvm_blk_rw_cb, br);
             blk_unref(blk);
+						if(debug_flag == 2)
+								printf("flush request %d %ld\n",br->id,br->sector);
         }
 	} while (1);
 
@@ -549,7 +528,7 @@ int kvm_blk_serv_handle_cmd(void *opaque)
 						wreq_last->next = wbr;
 						wreq_last = wbr;
 				}
-				//weather to call back or not
+				//whether to call back or not
 				if(wreq_quota > 0) 
 						kvm_blk_server_wcallback(s);
 				//handle wreq_quota

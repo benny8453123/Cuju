@@ -802,6 +802,8 @@ static int cuju_ft_trans_close(void *opaque)
             if (ret < 0) {
                 exit(ret);
             }
+						kvm_blk_do_pending_request(kvm_blk_session);
+
         }
         
         cuju_ft_mode = CUJU_FT_TRANSACTION_HANDOVER;

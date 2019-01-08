@@ -185,7 +185,6 @@ void kvm_blk_epoch_start(KvmBlkSession *s);
 void kvm_blk_epoch_commit(KvmBlkSession *s);
 void kvm_blk_epoch_timer(KvmBlkSession *s);
 void kvm_blk_notify_ft(KvmBlkSession *s);
-void kvm_blk_wait_pending_wreq(KvmBlkSession *s);
 
 static inline void kvm_blk_set_ack_cb(KvmBlkSession *s,
                                     BLK_ACK_CB cb, void *opaque) {
@@ -201,5 +200,9 @@ static inline bool kvm_blk_check_ack_cb(KvmBlkSession *s) {
 void kvm_blk_server_wcallback(KvmBlkSession *s);
 void kvm_blk_server_release_prev(KvmBlkSession *s);
 void kvm_blk_server_retransmit_cb(KvmBlkSession *s);
+
+//handle failover pending request
+struct kvm_blk_request *kvm_blk_save_pending_request(BlockBackend *blk,int64_t sector_num,QEMUIOVector *iov, BdrvRequestFlags flags,BlockCompletionFunc *cb,void *opaque,int cmd);
+void kvm_blk_do_pending_request(KvmBlkSession *s);
 
 #endif

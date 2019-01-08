@@ -357,5 +357,6 @@ int kvm_blk_client_init(const char *ipnport)
     kvm_blk_session = s;
     qemu_mutex_init(&s->mutex);
 
+		//kvm_blk_do_pending_read(s);
     return 0;
 }

@@ -3360,9 +3360,6 @@ static void migrate_timer(void *opaque)
 
     s->trans_serial = ++trans_serial;
 
-		//wait all sended write request callback
-		kvm_blk_wait_pending_wreq(kvm_blk_session);
-
     qemu_mutex_lock_iothread();
     vm_stop_mig();
     qemu_iohandler_ft_pause(true);
