@@ -3367,10 +3367,6 @@ static void migrate_timer(void *opaque)
     if (kvm_blk_session)
         kvm_blk_epoch_timer(kvm_blk_session);
 
-#ifdef ENABLE_DIRTY_PAGE_TRACKING
-    dirty_page_tracking_backup(s->cur_off);
-#endif
-
     s->flush_vs_commit1 = false;
     s->transfer_start_time = time_in_double();
     s->ram_len = 0;
@@ -3387,7 +3383,7 @@ static void migrate_timer(void *opaque)
 
     assert(kvm_shmem_collect_trackable_dirty() >= 0);
     assert(!migrate_save_device_states_to_memory_advanced(s, 0));
-    s->virtio_blk_temp_list = virtio_blk_get_temp_list();
+    s->virtio_blk_temp_list = virtio_blk_get_temp_list();       //temp_list
     kvm_shmem_trackable_dirty_reset();
     migrate_ft_trans_send_device_state_header(s->ft_dev, s->file);
     qemu_put_buffer(s->file, s->ft_dev->ft_dev_buf, s->ft_dev->ft_dev_put_off);

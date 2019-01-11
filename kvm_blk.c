@@ -37,7 +37,7 @@ retry:
    err = errno;
     if (retval == 0) {
         if (debug_flag == 1) {
-          debug_printf("disconn %d\n", s->sockfd);
+          printf("disconn %d\n", s->sockfd);
         }
         return -ENOTCONN;
     }
@@ -80,7 +80,7 @@ static void kvm_blk_read_ready(void *opaque)
             if (retval == -EAGAIN || retval == -EWOULDBLOCK)
                 break;
             if (retval < 0) {
-                perror("blk-server: recv header:");
+                perror("blk-server-> recv header");
                 goto clear;
             }
             if (s->recv_hdr.payload_len == 0) {
@@ -98,7 +98,7 @@ static void kvm_blk_read_ready(void *opaque)
                       s->recv_hdr.payload_len - s->input_buf_tail, 0);
         err = errno;
         if (retval == 0) {
-            debug_printf("%s: disconn.\n", __func__);
+            printf("%s: disconn.\n", __func__);
             goto clear;
         }
         if (retval < 0) {
@@ -106,7 +106,7 @@ static void kvm_blk_read_ready(void *opaque)
                 continue;
             if (err == EAGAIN)
                 break;
-            perror("blk-server: recv header:");
+            perror("blk-server->recv header");
             goto clear;
         }
         s->input_buf_tail += retval;
@@ -226,10 +226,7 @@ static void kvm_blk_accept(void *opaque)
     do {
         c = qemu_accept(s, (struct sockaddr *)&addr, &addrlen);
     } while (c == -1 && socket_error() == EINTR);
-
-    if (debug_flag == 1) {
-        debug_printf("accepted blk client %d.\n", c);
-    }
+printf("accepted blk client %d.\n", c);
 
     if (c == -1) {
         fprintf(stderr, "could not accept blk client.\n");
@@ -242,9 +239,6 @@ static void kvm_blk_accept(void *opaque)
 
     // read latest write_request_id
     recv(c, &wid, sizeof(wid), 0);    
-    if (debug_flag == 1) {
-        debug_printf("accepted wid %d\n", wid);
-    }
     session->sockfd = c;
     session->ft_mode = 0;
     session->bs = QTAILQ_FIRST(&all_bdrv_states);
