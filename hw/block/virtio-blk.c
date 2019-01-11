@@ -54,6 +54,7 @@ static void confirm_req_read_memory_mapped(VirtIOBlockReq *req)
     }
 }
 
+/*
 static void virtio_blk_save_write_head(VirtIOBlock *s, VirtIOBlockReq *req, unsigned int head)
 {
     if (s->temp_list == NULL) {
@@ -77,6 +78,7 @@ static void virtio_blk_save_write_head(VirtIOBlock *s, VirtIOBlockReq *req, unsi
     s->temp_list->len++;
     req->record = s->temp_list;
 }
+*/
 
 void* virtio_blk_get_temp_list(void)
 {
@@ -88,6 +90,7 @@ void* virtio_blk_get_temp_list(void)
     }
     return opaque;
 }
+
 
 static void virtio_blk_handle_write(VirtIOBlockReq *req, MultiReqBuffer *mrb);
 static void virtio_blk_submit_multireq(BlockBackend *blk, MultiReqBuffer *mrb);
@@ -800,20 +803,23 @@ static int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb, u
 
         if (is_write) {
             qemu_iovec_init_external(&req->qiov, iov, out_num);
+						s = req->dev;
+						req->next = s->pending_rq;
+						s->pending_rq = req;
             trace_virtio_blk_handle_write(req, req->sector_num,
                                           req->qiov.size / BDRV_SECTOR_SIZE);
 
-			if (kvmft_started()) {
+/*			if (kvmft_started()) {
 
                 if(!check_is_blk){
-                    virtio_blk_save_write_head(s, req, head);         //temp_list
+                    //virtio_blk_save_write_head(s, req, head);         //temp_list
 #ifdef CONFIG_EPOCH_OUTPUT_TRIGGER
                 extern kvmft_notify_new_output();
                 kvmft_notify_new_output();
 #endif
                     break;
                 }
-			}
+			}*/
         } else {
             if (kvmft_started()) {
                 qemu_iovec_alloc_by_external(&req->qiov, in_iov,
