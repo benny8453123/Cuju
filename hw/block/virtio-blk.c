@@ -36,9 +36,12 @@
 // to prove that retry-method works for one virtual block.
 VirtIOBlock *global_virtio_block;
 extern char *blk_server;
+bool check_is_blk = false;
+//for interruptible submit_multireq
 extern bool wait_iothread;
 bool blk_is_pending = false;
-bool check_is_blk = false;
+bool handle_vq_pending = false;
+
 static void confirm_req_read_memory_mapped(VirtIOBlockReq *req)
 {
     if (req->in == NULL) {
@@ -619,8 +622,21 @@ static inline void submit_requests(BlockBackend *blk, MultiReqBuffer *mrb,
 				if(check_is_blk){
         
 						if (is_write) {
+								int i;
 								blk_aio_pwritev_proxy(blk, sector_num<< BDRV_SECTOR_BITS , qiov, 0,
 												virtio_blk_rw_complete, mrb->reqs[start]);
+								//after send write request, backup to pending_wrq
+								for(i=0;i<num_reqs;++i) {
+										Wreqrecord *wrq;
+										VirtIOBlockReq *req = mrb->reqs[start+i];
+
+										wrq = g_malloc0(sizeof(Wreqrecord));
+										wrq->reqs = req;
+										wrq->list = req->head;
+										wrq->idx =  req->idx;
+										QTAILQ_INSERT_TAIL(&global_virtio_block->pending_wrq,wrq,node);
+										++global_virtio_block->pending_wlen;
+								}
 						} else {
 								blk_aio_preadv_proxy(blk, sector_num<< BDRV_SECTOR_BITS, qiov, 0,
 												virtio_blk_rw_complete, mrb->reqs[start]);
@@ -664,6 +680,9 @@ static int multireq_compare(const void *a, const void *b)
         return 0;
     }
 }
+void virtio_blk_do_submit_multireq(BlockBackend *blk, MultiReqBuffer *mrb) {
+	virtio_blk_submit_multireq(blk,mrb);
+}
 
 static void virtio_blk_submit_multireq(BlockBackend *blk, MultiReqBuffer *mrb)
 {
@@ -676,12 +695,19 @@ static void virtio_blk_submit_multireq(BlockBackend *blk, MultiReqBuffer *mrb)
         return;
     }
 
-    max_transfer = blk_get_max_transfer(mrb->reqs[0]->dev->blk);
+    max_transfer = blk_get_max_transfer(mrb->reqs[start]->dev->blk);
+						
+		//interruptible submit_multireq
+		if(blk_is_pending == true && mrb == global_virtio_block->stop_mrb) {
+		//only in blk-server
+			blk_is_pending = false;
+			start = mrb->stop_pos;
+		}
+		else
+			qsort(mrb->reqs, mrb->num_reqs, sizeof(*mrb->reqs),
+					&multireq_compare);
 
-    qsort(mrb->reqs, mrb->num_reqs, sizeof(*mrb->reqs),
-          &multireq_compare);
-
-    for (i = 0; i < mrb->num_reqs; i++) {
+    for (i = start; i < mrb->num_reqs; i++) {
         VirtIOBlockReq *req = mrb->reqs[i];
         if (num_reqs > 0) {
             /*
@@ -690,13 +716,20 @@ static void virtio_blk_submit_multireq(BlockBackend *blk, MultiReqBuffer *mrb)
              * 2. merge would exceed maximum number of IOVs
              * 3. merge would exceed maximum transfer length of backend device
              */
-						if (sector_num + nb_sectors != req->sector_num ||
+			if (sector_num + nb_sectors != req->sector_num ||
                 niov > blk_get_max_iov(blk) - req->qiov.niov ||
                 req->qiov.size > max_transfer ||
                 nb_sectors > (max_transfer -
                               req->qiov.size) / BDRV_SECTOR_SIZE) {
-                submit_requests(blk, mrb, start, num_reqs, niov);
+				submit_requests(blk, mrb, start, num_reqs, niov);
                 num_reqs = 0;
+				//interruptible submit_multireq
+				if(check_is_blk && wait_iothread) {
+					blk_is_pending = true;
+					mrb->stop_pos = i;
+					global_virtio_block->stop_mrb	= mrb;
+					return;
+				}
             }
         }
 
@@ -847,14 +880,8 @@ static int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb, u
                     break;
                 }
 								else {
-										Wreqrecord *wrq;
-
-										wrq = g_malloc0(sizeof(Wreqrecord));
-										wrq->reqs = req;
-										wrq->list = head;
-										wrq->idx =  virtio_get_queue_index(req->vq);
-										QTAILQ_INSERT_TAIL(&s->pending_wrq,wrq,node);
-										++s->pending_wlen; 
+										req->head = head;
+										req->idx = virtio_get_queue_index(req->vq);
 								}
 			}
         } else {
@@ -892,6 +919,10 @@ static int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb, u
                                   is_write != mrb->is_write ||
                                   !req->dev->conf.request_merging)) {
             virtio_blk_submit_multireq(req->dev->blk, mrb);
+			if(blk_is_pending) {
+			mrb->next = g_malloc0(sizeof(MultiReqBuffer));
+			mrb = mrb->next;
+			}
         }
 
         assert(mrb->num_reqs < VIRTIO_BLK_MAX_MERGE_REQS);
@@ -932,37 +963,35 @@ static int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb, u
 void virtio_blk_handle_vq(VirtIOBlock *s, VirtQueue *vq)
 {
     VirtIOBlockReq *req;
-    MultiReqBuffer mrb = {};
+    MultiReqBuffer *mrb;
     unsigned int head;
 
-		if(check_is_blk && wait_iothread) {
-				blk_is_pending = true;
-				return;
-		}
+	if(check_is_blk && (blk_is_pending || wait_iothread)) {
+		handle_vq_pending = true;
+		return;
+	}
+    mrb = g_malloc0(sizeof(MultiReqBuffer));
 
     blk_io_plug(s->blk);
 
     while ((req = virtio_blk_get_request(s, vq, &head))) {
-        if (virtio_blk_handle_request(req, &mrb, head)) {
+        if (virtio_blk_handle_request(req, mrb, head)) {
             virtqueue_detach_element(req->vq, &req->elem, 0);
             virtio_blk_free_request(req);
             break;
         }
-				if(check_is_blk) {
-						if(mrb.num_reqs) {
-								virtio_blk_submit_multireq(s->blk, &mrb);
-								mrb.num_reqs = 0;
-						}
-						if(wait_iothread) {
-								blk_is_pending = true;
-								break;
-						}
-				}
+		if(blk_is_pending) {
+				blk_io_unplug(s->blk);
+				return;
+		}
     }
 
-    if (mrb.num_reqs && !check_is_blk) {
-        virtio_blk_submit_multireq(s->blk, &mrb);
+    if (mrb->num_reqs) {
+        virtio_blk_submit_multireq(s->blk, mrb);
     }
+
+	if(!blk_is_pending)
+		free(mrb);
 
     blk_io_unplug(s->blk);
 }

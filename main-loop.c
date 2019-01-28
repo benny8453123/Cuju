@@ -42,7 +42,7 @@ extern VirtIOBlock *global_virtio_block;
 extern bool wait_iothread;
 extern bool blk_is_pending;
 extern bool check_is_blk;
-
+extern bool handle_vq_pending;
 //int io_thread_fd = -1;  //TODO find io thread fd
 
 /* If we have signalfd, we mask out the signals we want to handle and then
@@ -269,10 +269,31 @@ static int os_host_main_loop_wait(int64_t timeout)
         qemu_mutex_lock_iothread();
     }
 
-		if(check_is_blk && blk_is_pending && !wait_iothread) {
-				blk_is_pending = false;
-				virtio_blk_handle_vq(global_virtio_block,global_virtio_block->parent_obj.vq);
+	//for interruptible submit_multireq
+	if(check_is_blk && blk_is_pending) {
+		MultiReqBuffer *mrb = (MultiReqBuffer *)global_virtio_block->stop_mrb;
+		virtio_blk_do_submit_multireq(global_virtio_block->blk,mrb);
+		
+		if(blk_is_pending)
+			goto next_round;
+
+		if(mrb->next) {
+			mrb = mrb->next;
+			free(global_virtio_block->stop_mrb);
+			virtio_blk_do_submit_multireq(global_virtio_block->blk,mrb);
+			virtio_blk_handle_vq(global_virtio_block,global_virtio_block->parent_obj.vq);
 		}
+		free(mrb);
+		if(blk_is_pending)
+			goto next_round;
+		else
+			global_virtio_block->stop_mrb = NULL;		
+	}		
+		
+	if(handle_vq_pending)
+		virtio_blk_handle_vq(global_virtio_block,global_virtio_block->parent_obj.vq);
+
+next_round:
     glib_pollfds_poll();
     return ret;
 }

@@ -84,9 +84,9 @@ typedef struct VirtIOBlock {
     void *pending_rq;   	// pending read  requests
     ReqRecord *temp_list;
     ReqRecordList record_list;
-		WReqList pending_wrq;	// pending write request
-		int pending_wlen;
-
+	WReqList pending_wrq;	// pending write request
+	int pending_wlen;
+	void *stop_mrb;			//for blk-server interruptible submit_multireq
 
 } VirtIOBlock;
 
@@ -111,6 +111,8 @@ typedef struct VirtIOBlockReq {
 
     // For CUJU-FT
     ReqRecord *record;
+	unsigned int head;
+	int idx;
 } VirtIOBlockReq;
 
 #define VIRTIO_BLK_MAX_MERGE_REQS 32
@@ -119,8 +121,12 @@ typedef struct MultiReqBuffer {
     VirtIOBlockReq *reqs[VIRTIO_BLK_MAX_MERGE_REQS];
     unsigned int num_reqs;
     bool is_write;
+
+	//for blk-server interruptible submit_multirequest
+	int stop_pos;
+	struct MultiReqBuffer *next;
 } MultiReqBuffer;
 
 void virtio_blk_handle_vq(VirtIOBlock *s, VirtQueue *vq);
-
+void virtio_blk_do_submit_multireq(BlockBackend *blk, MultiReqBuffer *mrb);
 #endif
