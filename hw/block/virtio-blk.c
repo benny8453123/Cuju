@@ -40,7 +40,7 @@ bool check_is_blk = false;
 //for interruptible submit_multireq
 extern bool wait_iothread;
 bool blk_is_pending = false;
-bool handle_vq_pending = false;
+int handle_vq_pending = 0;
 
 static void confirm_req_read_memory_mapped(VirtIOBlockReq *req)
 {
@@ -967,7 +967,7 @@ void virtio_blk_handle_vq(VirtIOBlock *s, VirtQueue *vq)
     unsigned int head;
 
 	if(check_is_blk && (blk_is_pending || wait_iothread)) {
-		handle_vq_pending = true;
+		++handle_vq_pending;
 		return;
 	}
     mrb = g_malloc0(sizeof(MultiReqBuffer));

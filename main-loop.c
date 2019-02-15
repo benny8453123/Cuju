@@ -42,7 +42,7 @@ extern VirtIOBlock *global_virtio_block;
 extern bool wait_iothread;
 extern bool blk_is_pending;
 extern bool check_is_blk;
-extern bool handle_vq_pending;
+extern int handle_vq_pending;
 //int io_thread_fd = -1;  //TODO find io thread fd
 
 /* If we have signalfd, we mask out the signals we want to handle and then
@@ -290,9 +290,10 @@ static int os_host_main_loop_wait(int64_t timeout)
 			global_virtio_block->stop_mrb = NULL;		
 	}		
 		
-	if(handle_vq_pending)
+	if(handle_vq_pending) {
 		virtio_blk_handle_vq(global_virtio_block,global_virtio_block->parent_obj.vq);
-
+		--handle_vq_pending;
+	}
 next_round:
     glib_pollfds_poll();
     return ret;
