@@ -122,11 +122,15 @@ typedef struct kvm_blk_session {
     QTAILQ_HEAD(request_list, kvm_blk_request) request_list;
 
     QemuMutex mutex;
+    QemuMutex list_mutex;
 
     struct kvm_blk_request *issue;
 
     int id;
     int ft_mode;
+	QemuThread send_thread;
+	QemuCond cond;
+	QemuMutex send_mutex;
 } KvmBlkSession;
 
 struct kvm_blk_read_control {
@@ -200,5 +204,5 @@ void kvm_blk_server_free_wreq(void);
 //for failover:handle pending request
 struct kvm_blk_request *kvm_blk_save_pending_request(BlockBackend *blk,int64_t sector_num,QEMUIOVector *iov, BdrvRequestFlags flags,BlockCompletionFunc *cb,void *opaque,int cmd);
 void kvm_blk_do_pending_request(KvmBlkSession *s);
-
+void *kvm_blk_send_thread(void *opaque);
 #endif

@@ -121,6 +121,11 @@ clear:
     if (s->close_handler)
         s->close_handler(s);
 }
+static void signal_send_thread(void *opaque) {
+	KvmBlkSession *s = opaque;
+	qemu_cond_signal(&s->cond);
+}
+
 static void kvm_blk_write_ready(void *opaque)
 {
     int retval;
@@ -136,6 +141,7 @@ static void kvm_blk_write_ready(void *opaque)
     if (s->output_buf_tail - s->output_buf_head == 0)
         return;
 
+	qemu_mutex_lock(&s->mutex);
     do {
         retval = send(s->sockfd, s->output_buf + s->output_buf_head,
                       s->output_buf_tail - s->output_buf_head, 0);
@@ -160,7 +166,9 @@ static void kvm_blk_write_ready(void *opaque)
         s->output_buf_head = 0;
         s->output_buf_tail = 0;
     } else
-        qemu_set_fd_handler(s->sockfd, CUJU_IO_HANDLER_KEEP, kvm_blk_write_ready, s);
+        //qemu_set_fd_handler(s->sockfd, CUJU_IO_HANDLER_KEEP, kvm_blk_write_ready, s);
+        qemu_set_fd_handler(s->sockfd, CUJU_IO_HANDLER_KEEP, signal_send_thread, s);
+	qemu_mutex_unlock(&s->mutex);
     return;
 error:
     if (debug_flag == 1) {
@@ -293,6 +301,23 @@ int kvm_blk_server_init(const char *p)
     qemu_set_fd_handler(s,kvm_blk_accept,NULL,(void *)(intptr_t)s);
     return 0;
 }
+
+void *kvm_blk_send_thread(void *opaque) {                               
+    KvmBlkSession *s = opaque;
+    while(s) {
+		qemu_mutex_lock(&s->send_mutex);
+		qemu_cond_wait(&s->cond,&s->send_mutex);
+        if(s->output_buf_head == s->output_buf_tail) {
+			qemu_mutex_unlock(&s->send_mutex);
+			continue; 
+		}
+		kvm_blk_output_flush(s);
+		qemu_mutex_unlock(&s->send_mutex);
+    }
+    return s;
+}
+
+
 int kvm_blk_client_init(const char *ipnport)
 {
     int sockfd;
@@ -340,8 +365,12 @@ int kvm_blk_client_init(const char *ipnport)
 
     kvm_blk_session = s;
     qemu_mutex_init(&s->mutex);
+    qemu_mutex_init(&s->send_mutex);
+    qemu_mutex_init(&s->list_mutex);
+	qemu_cond_init(&s->cond);
+	qemu_thread_create(&s->send_thread,"Send_thread",kvm_blk_send_thread,s,QEMU_THREAD_DETACHED);
 		
-		//failover 
-		kvm_blk_do_pending_request(s);
+	//failover 
+	kvm_blk_do_pending_request(s);
     return 0;
 }

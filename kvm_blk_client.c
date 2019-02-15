@@ -31,9 +31,9 @@ int kvm_blk_client_handle_cmd(void *opaque)
 		return -1;
 	}
 
-    qemu_mutex_lock(&s->mutex);
+    qemu_mutex_lock(&s->list_mutex);
 	QTAILQ_REMOVE(&s->request_list, br, node);
-    qemu_mutex_unlock(&s->mutex);
+    qemu_mutex_unlock(&s->list_mutex);
 
 	// handle WRITE
 	if (s->recv_hdr.cmd == KVM_BLK_CMD_WRITE) {
@@ -99,10 +99,13 @@ struct kvm_blk_request *kvm_blk_aio_readv(BlockBackend *blk,
 	c.sector_num = sector_num;
 	c.nb_sectors = iov->size;
 
-    qemu_mutex_lock(&s->mutex);
 
+    qemu_mutex_lock(&s->list_mutex);
 	br->id = ++s->id;
 	QTAILQ_INSERT_TAIL(&s->request_list, br, node);
+    qemu_mutex_unlock(&s->list_mutex);
+
+    qemu_mutex_lock(&s->mutex);
 	s->send_hdr.cmd = KVM_BLK_CMD_READ;
 	s->send_hdr.payload_len = sizeof(c);
 	s->send_hdr.id = s->id;
@@ -110,8 +113,9 @@ struct kvm_blk_request *kvm_blk_aio_readv(BlockBackend *blk,
 
 	kvm_blk_output_append(s, &s->send_hdr, sizeof(s->send_hdr));
   	kvm_blk_output_append(s, &c, sizeof(c));
-  	kvm_blk_output_flush(s);
+  	//kvm_blk_output_flush(s);
     qemu_mutex_unlock(&s->mutex);
+	qemu_cond_signal(&s->cond);
 
     if (debug_flag == 1) {
 		debug_printf("sent read cmd: %ld %d %d\n", (long)c.sector_num, c.nb_sectors, s->id);
@@ -137,11 +141,13 @@ struct kvm_blk_request *kvm_blk_aio_write(BlockBackend *blk,int64_t sector_num,Q
 	br->cb = cb;
 	br->opaque = opaque;
 
-    qemu_mutex_lock(&s->mutex);
+    qemu_mutex_lock(&s->list_mutex);
 	br->id = ++s->id;
 	write_request_id = s->id;
 	QTAILQ_INSERT_TAIL(&s->request_list, br, node);
+    qemu_mutex_unlock(&s->list_mutex);
 
+    qemu_mutex_lock(&s->mutex);
 	s->send_hdr.cmd = KVM_BLK_CMD_WRITE;
 	s->send_hdr.payload_len = sizeof(c)+iov->size;
 	s->send_hdr.id = s->id;
@@ -155,9 +161,10 @@ struct kvm_blk_request *kvm_blk_aio_write(BlockBackend *blk,int64_t sector_num,Q
 
 	kvm_blk_output_append(s, &c, sizeof(c));
 	kvm_blk_output_append_iov(s, iov);
-	kvm_blk_output_flush(s);
+	//kvm_blk_output_flush(s);
 
     qemu_mutex_unlock(&s->mutex);
+	qemu_cond_signal(&s->cond);
 	//cb(opaque, 0);
     if (debug_flag == 2) {
 		printf("[send] write cmd: %ld %d %d\n", (long)c.sector_num, c.nb_sectors, s->id);
@@ -175,9 +182,10 @@ static void _kvm_blk_send_cmd(KvmBlkSession *s, int cmd)
 	s->send_hdr.payload_len = 0;
 
 	kvm_blk_output_append(s, &s->send_hdr, sizeof(s->send_hdr));
-	kvm_blk_output_flush(s);
+	//kvm_blk_output_flush(s);
 
     qemu_mutex_unlock(&s->mutex);
+	qemu_cond_signal(&s->cond);
 }
 
 void kvm_blk_epoch_timer(KvmBlkSession *s)
@@ -247,8 +255,10 @@ void kvm_blk_do_pending_request(KvmBlkSession *s) {
         iov = pending_read_now->piov;
         c.sector_num = pending_read_now->sector;
         c.nb_sectors = iov->size;
-           
+ 
+
         QTAILQ_INSERT_TAIL(&s->request_list, pending_read_now, node);
+		qemu_mutex_lock(&s->mutex);
         if(pending_read_now->cmd == KVM_BLK_CMD_READ) {
             s->send_hdr.cmd = KVM_BLK_CMD_READ;
             s->send_hdr.payload_len = sizeof(c);
@@ -263,8 +273,10 @@ void kvm_blk_do_pending_request(KvmBlkSession *s) {
         kvm_blk_output_append(s, &s->send_hdr, sizeof(s->send_hdr));
         kvm_blk_output_append(s, &c, sizeof(c));
         if(pending_read_now->cmd == KVM_BLK_CMD_WRITE)
-            kvm_blk_output_append_iov(s, iov);
-        kvm_blk_output_flush(s);
+            kvm_blk_output_append_iov(s, iov); 
+		qemu_mutex_unlock(&s->mutex);
+        //kvm_blk_output_flush(s);
+		qemu_cond_signal(&s->cond);
         pending_read_now = pending_read_now->next;
     }
 }
